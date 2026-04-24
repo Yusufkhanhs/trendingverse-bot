@@ -37,10 +37,14 @@ def run_bot():
         headers = {'Authorization': f'Basic {token}'}
 
         # 3. Publish
+# ... inside your run_bot() function ...
+
         payload = {
             'title': topic,
             'content': article_content,
-            'status': 'publish'
+            'status': 'publish',
+            'format': 'standard',
+            'author': 1, # Usually 1 is the admin ID. Check your ID in 'Users' if needed.
         }
 
         res = requests.post(wp_url, headers=headers, json=payload)
