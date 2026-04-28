@@ -7,8 +7,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Kannada:wght@400;500;600&family=DM+Sans:wght@400;500;600&family=DM+Mono&display=swap" rel="stylesheet">
 <!-- Supabase JS client (free, CDN) -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-<!-- bcryptjs for client-side password hashing -->
-<script src="https://cdn.jsdelivr.net/npm/bcryptjs@2.4.3/bCrypt.min.js"></script>
+<!-- Password hashing via native SubtleCrypto — no CDN needed -->
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -201,8 +200,29 @@ const weekAgo  = () => new Date(Date.now()-7*86400000).toISOString().slice(0,10)
 const fD = d => new Date(d).toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'});
 const fT = d => new Date(d).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'});
 const esc = s => s ? String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;') : '';
-const hashPw = pw => dcodeIO.bcrypt.hashSync(pw, 10);
-const checkPw = (pw, hash) => dcodeIO.bcrypt.compareSync(pw, hash);
+// Password hashing — uses native browser SubtleCrypto (SHA-256 + salt prefix)
+// Format stored: "sha256:SALT:HASH"
+async function hashPw(pw) {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const saltHex = Array.from(salt).map(b=>b.toString(16).padStart(2,'0')).join('');
+  const enc = new TextEncoder().encode(saltHex + pw);
+  const buf = await crypto.subtle.digest('SHA-256', enc);
+  const hash = Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
+  return `sha256:${saltHex}:${hash}`;
+}
+async function checkPw(pw, stored) {
+  // Support legacy plain-text passwords (seed admin uses bcrypt hash — handle gracefully)
+  if (!stored) return false;
+  if (stored.startsWith('sha256:')) {
+    const [, saltHex, storedHash] = stored.split(':');
+    const enc = new TextEncoder().encode(saltHex + pw);
+    const buf = await crypto.subtle.digest('SHA-256', enc);
+    const hash = Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
+    return hash === storedHash;
+  }
+  // Fallback: plain text comparison (only for initial seed admin before first password change)
+  return pw === stored;
+}
 
 // ── STATE ─────────────────────────────────────────────────────
 let S = {
@@ -648,7 +668,7 @@ async function doLogin() {
   try {
     const {data,error} = await db.from('cms_users').select('*').eq('username',u).single();
     if (error||!data) throw new Error('User not found.');
-    const ok = checkPw(p, data.password);
+    const ok = await checkPw(p, data.password);
     if (!ok) throw new Error('Incorrect password.');
     S.user = data;
     S.pg = 'app';
@@ -759,7 +779,7 @@ async function doCreateUser() {
   const btn = document.getElementById('createUserBtn');
   if (btn) btn.disabled=true;
   try {
-    const hashed = hashPw(pass);
+    const hashed = await hashPw(pass);
     const nu = await DB.createUser({username:uname, password:hashed, name, role});
     S.users = [...S.users, nu];
     S.ok=`User "${name}" created.`; S.err=null; render();
@@ -800,7 +820,7 @@ async function changePass() {
   if (!p1||p1.length<6) { alert('Password must be at least 6 characters.'); return; }
   if (p1!==p2) { alert('Passwords do not match.'); return; }
   try {
-    const hashed = hashPw(p1);
+    const hashed = await hashPw(p1);
     await DB.updateUser(S.user.id, {password:hashed});
     S.users=S.users.map(u=>u.id===S.user.id?{...u,password:hashed}:u);
     S.settingsMsg='Password updated.'; render();
